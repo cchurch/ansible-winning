@@ -1,0 +1,27 @@
+---
+
+- name: test raw commands
+  hosts: windows
+  gather_facts: false
+  connection: winrm
+  tasks:
+    - name: run getmac
+      raw: getmac
+    - name: run ipconfig
+      raw: ipconfig
+
+- name: test win_ping module
+  hosts: windows
+  gather_facts: false
+  connection: winrm
+  tasks:
+    - name: test win_ping
+      action: win_ping
+      register: ping_result
+    - name: check win_ping result
+      assert: { that: "ping_result.ping == 'pong'" }
+    - name: test win_ping with data
+      action: win_ping data=blah
+      register: ping_result
+    - name: check win_ping result with data
+      assert: { that: "ping_result.ping == 'blah'" }

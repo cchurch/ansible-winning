@@ -1,0 +1,2 @@
+[windows]
+windoze ansible_ssh_user=Administrator ansible_ssh_pass=ShhhDontTellAnyone
