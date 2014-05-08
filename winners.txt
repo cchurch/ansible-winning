@@ -1,2 +1,5 @@
 [windows]
 windoze ansible_ssh_user=Administrator ansible_ssh_pass=ShhhDontTellAnyone
+
+[windows:vars]
+ansible_connection=winrm

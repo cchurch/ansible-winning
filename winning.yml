@@ -3,7 +3,6 @@
 - name: test raw commands
   hosts: windows
   gather_facts: false
-  connection: winrm
   tasks:
     - name: run getmac
       raw: getmac
@@ -13,7 +12,6 @@
 - name: test win_ping module
   hosts: windows
   gather_facts: false
-  connection: winrm
   tasks:
     - name: test win_ping
       action: win_ping
@@ -21,7 +19,30 @@
     - name: check win_ping result
       assert: { that: "ping_result.ping == 'pong'" }
     - name: test win_ping with data
-      action: win_ping data=blah
+      win_ping: data=blah
       register: ping_result
     - name: check win_ping result with data
       assert: { that: "ping_result.ping == 'blah'" }
+
+- name: test win_ping2 module
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: test win_ping2
+      action: win_ping2
+
+- name: test setup module
+  hosts: windowsX
+  gather_facts: true
+  tasks:
+    - name: no-op
+      debug: msg="here"
+
+- name: test fetch module
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: fetch a small file
+      fetch: src="C:/Windows/win.ini" dest=tmp
+    #- name: fetch a large file
+    #  fetch: src="C:/Windows/explorer.exe" dest=tmp
