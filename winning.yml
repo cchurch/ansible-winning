@@ -3,6 +3,7 @@
 - name: test raw commands
   hosts: windows
   gather_facts: false
+  tags: raw
   tasks:
     - name: run getmac
       raw: getmac
@@ -12,6 +13,7 @@
 - name: test win_ping module
   hosts: windows
   gather_facts: false
+  tags: win_ping
   tasks:
     - name: test win_ping
       action: win_ping
@@ -24,25 +26,61 @@
     - name: check win_ping result with data
       assert: { that: "ping_result.ping == 'blah'" }
 
-- name: test win_ping2 module
+- name: test ping.ps1 module
   hosts: windows
   gather_facts: false
+  tags: ping
   tasks:
-    - name: test win_ping2
-      action: win_ping2
-
-- name: test setup module
-  hosts: windowsX
-  gather_facts: true
-  tasks:
-    - name: no-op
-      debug: msg="here"
+    - name: test ping.ps1
+      action: ping.ps1
+    - name: test local ping (should use default ping)
+      local_action: ping
+    - name: test ping (should use ping.ps1)
+      action: ping
 
 - name: test fetch module
   hosts: windows
   gather_facts: false
+  tags: fetch
   tasks:
     - name: fetch a small file
       fetch: src="C:/Windows/win.ini" dest=tmp
     #- name: fetch a large file
     #  fetch: src="C:/Windows/explorer.exe" dest=tmp
+
+- name: test stat module
+  hosts: windows
+  gather_facts: false
+  tags: stat
+  tasks:
+    - name: test stat module on file
+      stat: path="C:/Windows/win.ini"
+      register: stat_file
+    - name: check stat_file result
+      assert: { that: ["stat_file.stat.exists", "not stat_file.stat.isdir", "stat_file.stat.size > 0", "stat_file.stat.md5"] }
+    - name: test stat module on directory
+      stat: path="C:/Windows"
+      register: stat_dir
+    - name: check stat_dir result
+      assert: { that: ["stat_dir.stat.exists", "stat_dir.stat.isdir"]}
+    - name: test stat module non-existent path
+      stat: path="C:/this_file_should_not_exist.txt"
+      register: stat_missing
+    - name: check stat_missing result
+      assert: { that: ["not stat_missing.stat.exists"] }
+
+- name: test setup module
+  hosts: windows_not_yet_implemented
+  gather_facts: true
+  tags: setup
+  tasks:
+    - name: no-op
+      debug: msg="here"
+
+- name: test template module
+  hosts: windows_not_yet_implemented
+  gather_facts: false
+  tags: template
+  tasks:
+    - name: upload a templated text file
+      template: src=templates/ansible_was_here.txt.j2 dest="C:/ansible_was_here.txt"
