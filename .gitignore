@@ -1,3 +1,4 @@
 *.pyc
 *.pyo
 tmp
+fetch_tmp

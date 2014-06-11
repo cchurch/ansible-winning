@@ -1,6 +1,6 @@
 ---
 
-- name: test raw commands
+- name: test raw module
   hosts: windows
   gather_facts: false
   tags: raw
@@ -9,6 +9,16 @@
       raw: getmac
     - name: run ipconfig
       raw: ipconfig
+
+- name: test script module
+  hosts: windows
+  gather_facts: false
+  tags: script
+  tasks:
+    - name: run test script
+      script: files/test_script.ps1
+    #- name: run bootstrap script
+    #  script: files/bootstrap.ps1
 
 - name: test win_ping module
   hosts: windows
@@ -43,10 +53,28 @@
   gather_facts: false
   tags: fetch
   tasks:
+    - name: remove local tmp path
+      local_action: file path=fetch_tmp state=absent
     - name: fetch a small file
-      fetch: src="C:/Windows/win.ini" dest=tmp
-    #- name: fetch a large file
-    #  fetch: src="C:/Windows/explorer.exe" dest=tmp
+      fetch: src="C:/Windows/win.ini" dest=fetch_tmp
+      register: fetch_small
+    - name: check fetch small result
+      assert: {that: ["fetch_small.changed"] }
+    - name: fetch the same small file
+      fetch: src="C:/Windows/win.ini" dest=fetch_tmp
+      register: fetch_small_again
+    - name: check fetch small result
+      assert: {that: ["not fetch_small_again.changed"] }
+    - name: fetch a large file
+      fetch: src="C:/Windows/explorer.exe" dest=fetch_tmp
+      register: fetch_large
+    - name: check fetch large result
+      assert: {that: ["fetch_large.changed"] }
+    - name: fetch a large file again
+      fetch: src="C:/Windows/explorer.exe" dest=fetch_tmp
+      register: fetch_large_again
+    - name: check fetch large result
+      assert: {that: ["not fetch_large_again.changed"] }
 
 - name: test stat module
   hosts: windows

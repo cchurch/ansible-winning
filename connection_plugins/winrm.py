@@ -18,20 +18,29 @@
 from __future__ import absolute_import
 
 import base64
+import imp
 import os
 import re
 import shlex
-import shutil
 import traceback
 import urlparse
 from ansible import errors
 from ansible import utils
 from ansible.callbacks import vvv, vvvv
 
-from winrm import Response
-from winrm.exceptions import WinRMTransportError
-from winrm.protocol import Protocol
+try:
+    from winrm import Response
+    from winrm.exceptions import WinRMTransportError
+    from winrm.protocol import Protocol
+except ImportError:
+    raise errors.AnsibleError("winrm is not installed")
 
+# When running with unmodified Ansible (1.6.x), load local hacks.
+try:
+    _winrm_hacks = imp.load_source('_winrm_hacks', os.path.join(os.path.dirname(__file__), '_winrm_hacks.py'))
+except ImportError:
+    raise
+    _winrm_hacks = None
 
 class Connection(object):
     '''WinRM connections over HTTP/HTTPS.'''
@@ -46,39 +55,17 @@ class Connection(object):
         self.protocol = None
         self.shell_id = None
         self.delegate = None
-
-        # Monkeypatch module finder to attempt to load modules with .ps1
-        # suffix first when using this connection plugin.
-        import inspect
-        from ansible.utils.plugins import module_finder
-        orig_find_plugin = module_finder.find_plugin
-        def find_plugin(name):
-            try_ps1_suffix = False
-            for frame_tuple in inspect.stack():
-                frame_locals = inspect.getargvalues(frame_tuple[0])[3]
-                if 'conn' in frame_locals:
-                    if frame_locals['conn'] is self:
-                        try_ps1_suffix = True
-                    break
-            module_path = None
-            if try_ps1_suffix and not name.lower().endswith('.ps1'):
-                module_path = orig_find_plugin('%s.ps1' % name)
-            if not module_path:
-                module_path = orig_find_plugin(name)
-            return module_path
-        module_finder.find_plugin = find_plugin
+        if _winrm_hacks:
+            _winrm_hacks.patch_module_finder(self)
 
     def _winrm_connect(self):
         '''
         Establish a WinRM connection over HTTP/HTTPS.
         '''
-        # Ansible doesn't pass ansible_ssh_port to this connection, so we have
-        # to get it ourselves.
-        port = self.port
-        if not port:
-            host = self.delegate or self.host
-            host_vars = self.runner.inventory.get_variables(host, vault_password=self.runner.vault_pass)
-            port = int(host_vars.get('ansible_ssh_port', None) or 5986)
+        if _winrm_hacks:
+            port = _winrm_hacks.get_port(self)
+        else:
+            port = self.port or 5986
         vvv("ESTABLISH WINRM CONNECTION FOR USER: %s on PORT %s TO %s" % \
             (self.user, port, self.host), host=self.host)
         netloc = '%s:%d' % (self.host, port)
@@ -106,6 +93,7 @@ class Connection(object):
                         return protocol
                 vvvv('WINRM CONNECTION ERROR: %s' % err_msg, host=self.host)
                 continue
+        # FIXME: Cache connection!!!
         if exc:
             raise exc
 
@@ -134,52 +122,6 @@ class Connection(object):
         return ['PowerShell', '-NoProfile', '-NonInteractive',
                 '-EncodedCommand', encoded_script]
 
-    def _winrm_filter(self, cmd_parts):
-        try:
-            # HACK: Catch runner _make_tmp_path() call and replace with PS.
-            if cmd_parts[0] == 'mkdir' and cmd_parts[1] == '-p' and cmd_parts[-3] == '&&' and cmd_parts[-2] == 'echo' and cmd_parts[2] == cmd_parts[-1] and '-tmp-' in os.path.basename(cmd_parts[2]):
-                basename = os.path.basename(cmd_parts[2])
-                script = '''(New-Item -Type Directory -Path $env:temp -Name "%s").FullName;''' % self._winrm_escape(basename)
-                return self._winrm_get_script_cmd(script)
-            # HACK: Catch runner _execute_module() chmod calls and ignore.
-            if cmd_parts[0] == 'chmod' and '-tmp-' in cmd_parts[2]:
-                return [] # No-op.
-            # HACK: Catch runner _remove_tmp_path() call and replace with PS.
-            if cmd_parts[0] == 'rm' and cmd_parts[1] == '-rf' and '-tmp-' in cmd_parts[2]:
-                path = cmd_parts[2].replace('/', '\\')
-                script = '''Remove-Item "%s" -Force -Recurse;''' % self._winrm_escape(path)
-                return self._winrm_get_script_cmd(script)
-            # HACK: Catch runner _remote_md5() call and replace with PS.
-            if cmd_parts[0] == 'rc=0;' and '(/usr/bin/md5sum' in cmd_parts:
-                path = cmd_parts[cmd_parts.index('(/usr/bin/md5sum') + 1]
-                if path.startswith('\'') and path.endswith('\''):
-                    path = path[1:-1]
-                path = path.replace('/', '\\')
-                script = '''(Get-FileHash -Path "%s" -Algorithm MD5).Hash.ToLower();''' % self._winrm_escape(path)
-                return self._winrm_get_script_cmd(script)
-            # HACK: Catch the call to run the PS module.
-            if any(x.lower().startswith('powershell') for x in cmd_parts):
-                env_vars = {}
-                for n, cmd_part in enumerate(cmd_parts):
-                    if cmd_part.lower().startswith('powershell'):
-                        cmd_parts = cmd_parts[n:]
-                        break
-                    elif '=' in cmd_part:
-                        var, val = cmd_part.split('=', 1)
-                        env_vars[var] = val
-                mod_path = cmd_parts[1].replace('/', '\\')
-                if not mod_path.lower().endswith('.ps1'):
-                    mod_path = '%s.ps1' % mod_path
-                args_path = cmd_parts[2].replace('/', '\\').rstrip(';')
-                script = '''PowerShell -NoProfile -NonInteractive -File "%s" "%s";''' % (self._winrm_escape(mod_path), self._winrm_escape(args_path))
-                if len(cmd_parts) >= 6 and cmd_parts[3] == 'rm' and cmd_parts[4] == '-rf' and '-tmp-' in cmd_parts[5]:
-                    path = cmd_parts[5].replace('/', '\\')
-                    script += ''' Remove-Item "%s" -Force -Recurse;''' % self._winrm_escape(path)
-                return self._winrm_get_script_cmd(script)
-        except IndexError:
-            pass
-        return cmd_parts
-
     def _winrm_exec(self, command, args):
         vvvv("WINRM EXEC %r %r" % (command, args), host=self.host)
         if not self.protocol:
@@ -198,8 +140,12 @@ class Connection(object):
                 self.protocol.cleanup_command(self.shell_id, command_id)
 
     def connect(self):
-        # No-op. Connect lazily on first command, to allow for runner to set
-        # self.delegate, needed if actual host vs. host name are different.
+        if not _winrm_hacks:
+            if not self.protocol:
+                self.protocol = self._winrm_connect()
+        # When using hacks, connect lazily on first command, to allow for
+        # runner to set self.delegate, needed if actual host vs. host name are
+        # different.
         return self
 
     def exec_command(self, cmd, tmp_path, sudo_user=None, sudoable=False, executable='/bin/sh', in_data=None, su=None, su_user=None):
@@ -207,7 +153,8 @@ class Connection(object):
         vvv("EXEC %s" % cmd, host=self.host)
         cmd_parts = shlex.split(cmd, posix=False)
         vvvv("WINRM PARTS %r" % cmd_parts, host=self.host)
-        cmd_parts = self._winrm_filter(cmd_parts)
+        if _winrm_hacks:
+            cmd_parts = _winrm_hacks.filter_cmd_parts(self, cmd_parts)
         if not cmd_parts:
             vvv('WINRM NOOP')
             return (0, '', '', '')
@@ -219,44 +166,70 @@ class Connection(object):
         return (result.status_code, '', result.std_out.encode('utf-8'), result.std_err.encode('utf-8'))
 
     def put_file(self, in_path, out_path):
-        out_path = out_path.replace('/', '\\')
+        if _winrm_hacks:
+            out_path = _winrm_hacks.fix_slashes(out_path)
         vvv("PUT %s TO %s" % (in_path, out_path), host=self.host)
         if not os.path.exists(in_path):
             raise errors.AnsibleFileNotFound("file or module does not exist: %s" % in_path)
-        chunk_size = 1024 # FIXME: Find max size or optimize.
+        buffer_size = 1024 # FIXME: Find max size or optimize.
         with open(in_path) as in_file:
-            for offset in xrange(0, os.path.getsize(in_path), chunk_size):
+            in_size = os.path.getsize(in_path)
+            for offset in xrange(0, in_size, buffer_size):
                 try:
-                    out_data = in_file.read(chunk_size)
+                    out_data = in_file.read(buffer_size)
                     if offset == 0:
                         if out_data.lower().startswith('#!powershell') and not out_path.lower().endswith('.ps1'):
                             out_path = out_path + '.ps1'
-                        script = '''New-Item -Path "%s" -Type File -Value "%s";''' % (self._winrm_escape(out_path), self._winrm_escape(out_data, True))
-                    else:
-                        script = '''Add-Content -Path "%s" -Value "%s";''' % (self._winrm_escape(out_path), self._winrm_escape(out_data, True))
+                    b64_data = base64.b64encode(out_data)
+                    script = '''
+                        $bufferSize = %d;
+                        $stream = [System.IO.File]::OpenWrite("%s");
+                        $stream.Seek(%d, [System.IO.SeekOrigin]::Begin) | Out-Null;
+                        $data = "%s";
+                        $buffer = [System.Convert]::FromBase64String($data);
+                        $stream.Write($buffer, 0, $buffer.length) | Out-Null;
+                        $stream.SetLength(%d) | Out-Null;
+                        $stream.Close() | Out-Null;
+                    ''' % (buffer_size, self._winrm_escape(out_path), offset, b64_data, in_size)
                     cmd_parts = self._winrm_get_script_cmd(script)
-                    self._winrm_exec(cmd_parts[0], cmd_parts[1:])
-                except Exception:#IOError:
+                    result = self._winrm_exec(cmd_parts[0], cmd_parts[1:])
+                    if result.status_code != 0:
+                        raise RuntimeError(result.std_err.encode('utf-8'))
+                    script = u''
+                except Exception: # IOError?
                     traceback.print_exc()
                     raise errors.AnsibleError("failed to transfer file to %s" % out_path)
 
     def fetch_file(self, in_path, out_path):
-        in_path = in_path.replace('/', '\\')
+        if _winrm_hacks:
+            in_path = _winrm_hacks.fix_slashes(in_path)
         out_path = out_path.replace('\\', '/')
         vvv("FETCH %s TO %s" % (in_path, out_path), host=self.host)
-        chunk_size = 1024 # FIXME: How to get file in chunks?
+        buffer_size = 2**20 # 1MB chunks
         if not os.path.exists(os.path.dirname(out_path)):
             os.makedirs(os.path.dirname(out_path))
         with open(out_path, 'wb') as out_file:
+            offset = 0
             while True:
                 try:
-                    # FIXME: Which encoding for binary files?
-                    script = '''Get-Content -Path "%s" -Encoding UTF8 -ReadCount 0;''' % self._winrm_escape(in_path)
+                    script = '''
+                        $bufferSize = %d;
+                        $stream = [System.IO.File]::OpenRead("%s");
+                        $stream.Seek(%d, [System.IO.SeekOrigin]::Begin) | Out-Null;
+                        $buffer = New-Object Byte[] $bufferSize;
+                        $bytesRead = $stream.Read($buffer, 0, $bufferSize);
+                        $bytes = $buffer[0..($bytesRead-1)];
+                        [System.Convert]::ToBase64String($bytes);
+                        $stream.Close() | Out-Null;
+                    ''' % (buffer_size, self._winrm_escape(in_path), offset)
                     cmd_parts = self._winrm_get_script_cmd(script)
                     result = self._winrm_exec(cmd_parts[0], cmd_parts[1:])
-                    out_file.write(result.std_out)
-                    break
-                except Exception:#IOError:
+                    data = base64.b64decode(result.std_out.strip())
+                    out_file.write(data)
+                    if len(data) < buffer_size:
+                        break
+                    offset += len(data)
+                except Exception: # IOError?
                     traceback.print_exc()
                     raise errors.AnsibleError("failed to transfer file to %s" % out_path)
 
