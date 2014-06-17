@@ -1,0 +1,40 @@
+---
+
+- name: setup winrm over https (work in progress)
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: check for existing https listener
+      raw: winrm enumerate winrm/config/listener
+      register: winrm_listeners
+    - name: determine if host needs https listener
+      set_fact: needs_listener="{{ 'Transport = HTTPS' in winrm_listeners.stdout }}"
+    - name: generate self-signed ssl cert
+      script: files/New-SelfSignedCertificateEx.ps1
+        -Subject "CN={{ inventory_hostname }}"
+        -EKU "Server Authentication", "Client Authentication"
+        -KeyUsage "KeyEcipherment, DigitalSignature"
+        -Exportable
+        -StoreName "My"
+        -StoreLocation "LocalMachine"
+      register: create_cert
+      failed_when: create_cert.stderr
+      when: needs_listener
+    - name: get cert thumbprint
+      raw: PowerShell -Command {(Get-ChildItem "cert:\LocalMachine\My" | Where-Object { $_.Subject -eq "CN={{ inventory_hostname}}" } | Select-Object -Last 1).thumbprint}
+      register: cert_thumbprint
+      failed_when: cert_thumbprint.stderr or not cert_thumbprint.stdout
+      when: needs_listener
+    - name: create winrm https listener
+      raw: winrm create winrm/config/Listener?Address=*+Transport=HTTPS
+        '@{Hostname="{{ inventory_hostname }}";CertificateThumbprint="{{ cert_thumbprint.stdout|trim }}"}'
+      register: create_listener
+      failed_when: create_listener.stderr
+      when: needs_listener
+    - name: check for https listener
+      raw: winrm enumerate winrm/config/listener
+      register: winrm_listeners2
+      when: needs_listener
+    - name: check that https listener was created
+      assert: { that: "'Transport = HTTPS' in winrm_listeners2.stdout" }
+      when: needs_listener
