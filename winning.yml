@@ -17,8 +17,6 @@
   tasks:
     - name: run test script
       script: files/test_script.ps1
-    #- name: run bootstrap script
-    #  script: files/bootstrap.ps1
 
 - name: test win_ping module
   hosts: windows
@@ -75,6 +73,28 @@
       register: fetch_large_again
     - name: check fetch large result
       assert: {that: ["not fetch_large_again.changed"] }
+
+- name: test slurp module
+  hosts: windows
+  gather_facts: false
+  tags: slurp
+  tasks:
+    - name: test slurping an existing file
+      slurp: src="C:/Windows/win.ini"
+      register: slurp_src
+    - name: check slurp src result
+      assert: { that: ["slurp_src.content", "slurp_src.encoding == 'base64'"] }
+    - name: test slurping an existing file with alternate param name
+      slurp: path="C:/Windows/win.ini"
+      register: slurp_path
+    - name: check slurp path result
+      assert: { that: ["slurp_path.content", "slurp_path.encoding == 'base64'"] }
+    - name: test slurping a non-existent file
+      slurp: src="C:/this_file_should_not_exist.txt"
+      register: slurp_missing
+      ignore_errors: true
+    - name: check slurp missing result
+      assert: { that: ["slurp_missing.failed", "slurp_missing.msg"] }
 
 - name: test stat module
   hosts: windows

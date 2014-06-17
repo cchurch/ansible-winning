@@ -3,4 +3,4 @@ windoze ansible_ssh_user=Administrator ansible_ssh_pass=ShhhDontTellAnyone
 
 [windows:vars]
 ansible_connection=winrm
-ansible_ssh_port=5985
+ansible_ssh_port=5986 # Default for HTTPS, HTTP uses 5985

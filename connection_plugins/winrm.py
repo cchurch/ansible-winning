@@ -18,6 +18,7 @@
 from __future__ import absolute_import
 
 import base64
+import hashlib
 import imp
 import os
 import re
@@ -41,6 +42,10 @@ try:
 except ImportError:
     raise
     _winrm_hacks = None
+
+_winrm_cache = {
+    # 'user:pwhash@host:port': <protocol instance>
+}
 
 class Connection(object):
     '''WinRM connections over HTTP/HTTPS.'''
@@ -69,6 +74,10 @@ class Connection(object):
         vvv("ESTABLISH WINRM CONNECTION FOR USER: %s on PORT %s TO %s" % \
             (self.user, port, self.host), host=self.host)
         netloc = '%s:%d' % (self.host, port)
+        cache_key = '%s:%s@%s:%d' % (self.user, hashlib.md5(self.password).hexdigest(), self.host, port)
+        if cache_key in _winrm_cache:
+            vvvv('WINRM REUSE EXISTING CONNECTION: %s' % cache_key, host=self.host)
+            return _winrm_cache[cache_key]
         transport_schemes = [('plaintext', 'https'), ('plaintext', 'http')] # FIXME: ssl/kerberos
         if port == 5985:
             transport_schemes = reversed(transport_schemes)
@@ -81,6 +90,7 @@ class Connection(object):
                                 username=self.user, password=self.password)
             try:
                 protocol.send_message('')
+                _winrm_cache[cache_key] = protocol
                 return protocol
             except WinRMTransportError, exc:
                 err_msg = str(exc.args[0])
@@ -90,6 +100,7 @@ class Connection(object):
                 if m:
                     code = int(m.groups()[0])
                     if code == 411:
+                        _winrm_cache[cache_key] = protocol
                         return protocol
                 vvvv('WINRM CONNECTION ERROR: %s' % err_msg, host=self.host)
                 continue
